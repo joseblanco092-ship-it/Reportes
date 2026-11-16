@@ -86,6 +86,13 @@
     }
     .btn-file:hover { border-color: var(--primary); color: var(--primary); }
     input[type="file"] { display: none; }
+    #camOverlay { position: fixed; inset: 0; z-index: 9999; background: #000; display: flex; flex-direction: column; }
+    #camVideo { flex: 1; min-height: 0; width: 100%; object-fit: contain; background: #000; }
+    .cam-bar { display: flex; align-items: center; justify-content: space-between; padding: 18px 22px calc(18px + env(safe-area-inset-bottom)); background: #000; }
+    .cam-shot { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff; background: #fff; box-shadow: inset 0 0 0 4px #000; cursor: pointer; }
+    .cam-shot:active { background: #cbd5e1; }
+    .cam-btn { background: transparent; color: #fff; border: 1px solid #fff; border-radius: 6px; padding: 10px 16px; font-size: 1rem; font-weight: 600; cursor: pointer; min-width: 80px; }
+    .cam-count { color: #fff; min-width: 80px; text-align: right; font-size: 0.95rem; }
     .check { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; margin: 0; color: var(--text-main); }
     .check input { width: 20px; height: 20px; margin-top: 2px; flex-shrink: 0; }
     #collagePreview { display: none; width: 100%; margin-top: 10px; border-radius: 6px; border: 1px solid var(--border-color); }
@@ -213,13 +220,21 @@
 
         <div class="form-group">
           <div class="photo-actions">
-            <label for="cameraInput" class="btn-file"><span>📷 Tomar foto</span></label>
+            <button type="button" id="btnCamara" class="btn-file"><span>📷 Tomar foto</span></button>
             <label for="photoInput" class="btn-file"><span>🖼️ Galería</span></label>
           </div>
           <!-- capture="environment" abre directamente la cámara trasera en el teléfono -->
           <input type="file" id="cameraInput" accept="image/*" capture="environment">
           <input type="file" id="photoInput" accept="image/*" multiple>
           <div class="photo-grid" id="photoGrid"></div>
+          <div id="camOverlay" style="display:none">
+            <video id="camVideo" autoplay playsinline muted></video>
+            <div class="cam-bar">
+              <button type="button" id="camDone" class="cam-btn">Listo</button>
+              <button type="button" id="camShot" class="cam-shot" aria-label="Capturar"></button>
+              <span id="camCount" class="cam-count"></span>
+            </div>
+          </div>
           <div class="photo-count" id="photoCount"></div>
           <div id="collageBox" style="display:none; margin-top:14px;">
             <label class="check"><input type="checkbox" id="collageToggle" checked><span>Unir las fotos en un collage (se envía como una sola imagen)</span></label>
@@ -357,6 +372,59 @@
         renderPhotoGrid();
       }).catch(() => showToast('No se pudo procesar una fotografía'));
     }
+
+    // ---------- Cámara dentro de la app ----------
+    // Abrir la cámara del sistema deja el navegador en segundo plano y, en teléfonos con poca RAM,
+    // lo cierra al volver con una foto enorme. Aquí se usa la cámara en vivo y solo se guarda un fotograma
+    // de máximo 1280 px, sin decodificar nunca la foto completa.
+    let camStream = null, camShots = 0;
+
+    function stopCamera() {
+      if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; }
+      const v = $('camVideo'); v.srcObject = null;
+      $('camOverlay').style.display = 'none';
+    }
+
+    async function openCamera() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { $('cameraInput').click(); return; }
+      try {
+        camStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false
+        });
+      } catch (e) {
+        showToast('No se pudo abrir la cámara integrada; se usará la del sistema');
+        $('cameraInput').click();
+        return;
+      }
+      camShots = 0; $('camCount').textContent = '';
+      const v = $('camVideo');
+      v.srcObject = camStream;
+      $('camOverlay').style.display = 'flex';
+      try { await v.play(); } catch (e) {}
+    }
+
+    function captureFrame() {
+      const v = $('camVideo');
+      if (!v.videoWidth) return;
+      const scale = Math.min(1, 1280 / Math.max(v.videoWidth, v.videoHeight));
+      const w = Math.round(v.videoWidth * scale), h = Math.round(v.videoHeight * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      canvas.getContext('2d').drawImage(v, 0, 0, w, h);
+      canvas.toBlob(b => {
+        canvas.width = canvas.height = 0;
+        if (!b) { showToast('No se pudo capturar la foto'); return; }
+        camShots++;
+        $('camCount').textContent = camShots + (camShots === 1 ? ' foto' : ' fotos');
+        addPhotoFiles([new File([b], 'foto.jpg', { type: 'image/jpeg', lastModified: Date.now() })]);
+      }, 'image/jpeg', 0.8);
+    }
+
+    $('btnCamara').addEventListener('click', openCamera);
+    $('camShot').addEventListener('click', captureFrame);
+    $('camDone').addEventListener('click', stopCamera);
+    document.addEventListener('visibilitychange', () => { if (document.hidden && camStream) stopCamera(); });
 
     function onPhotoInput(e) {
       const files = Array.from(e.target.files || []);

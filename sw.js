@@ -1,4 +1,4 @@
-const CACHE = 'reportes-pwa-v5';
+const CACHE = 'reportes-pwa-v6';
 const BASE = '/Reportes/';
 const FILES = [
   BASE,
