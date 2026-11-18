@@ -839,7 +839,7 @@ Estatus del equipo: ${estatus}`;
       let done = false;
       function hideSplash() {
         if (done) return; done = true;
-        const wait = Math.max(0, 700 - (Date.now() - t0));   // visible al menos 0,7 s para que no parpadee
+        const wait = Math.max(0, 1600 - (Date.now() - t0));  // visible al menos 1,6 s para que se alcance a ver
         setTimeout(() => {
           splash.classList.add('hide');
           setTimeout(() => splash.remove(), 500);
@@ -847,7 +847,7 @@ Estatus del equipo: ${estatus}`;
       }
       if (document.readyState === 'complete') hideSplash();
       else window.addEventListener('load', hideSplash);
-      setTimeout(hideSplash, 4000);                          // tope de seguridad
+      setTimeout(hideSplash, 5000);                          // tope de seguridad
     })();
 
     // ---------- Instalación / uso sin internet (PWA) ----------
