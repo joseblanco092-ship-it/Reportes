@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0f4c81">
+  <meta name="theme-color" content="#0a1f4d">
   <link rel="manifest" href="manifest.json">
-  <link rel="icon" href="icono_192.png">
-  <link rel="apple-touch-icon" href="icono_512.png">
+  <link rel="icon" type="image/png" href="icono_192.png?v=8">
+  <link rel="apple-touch-icon" href="icono_512_maskable.png?v=8">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Reportes">
@@ -140,9 +140,34 @@
       transform: translateX(-50%); font-size: 0.9rem; box-shadow: 0 4px 12px rgba(0,0,0,.25); transition: opacity .25s;
     }
     #toast.show { visibility: visible; opacity: 1; }
+
+    /* ---------- Splash screen ---------- */
+    #splash {
+      position: fixed; inset: 0; z-index: 9999; background: #ffffff;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      overflow: hidden; transition: opacity .35s ease, visibility .35s ease;
+      /* Respaldo si el script no llega a ejecutarse: se oculta sola */
+      animation: splashAutoHide .01s linear 8s forwards;
+    }
+    #splash.hide { opacity: 0; visibility: hidden; pointer-events: none; }
+    @keyframes splashAutoHide { to { opacity: 0; visibility: hidden; pointer-events: none; } }
+    #splash img { display: block; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+    #splash .splash-top { position: absolute; top: 0; left: 0; width: 100%; max-width: 720px; height: auto; }
+    #splash .splash-bottom { position: absolute; bottom: 0; right: 0; width: 100%; max-width: 720px; height: auto; }
+    #splash .splash-logo { position: relative; width: min(88vw, 440px); height: auto; }
+    #splash .splash-loader { position: relative; margin-top: clamp(4px, 1.5vh, 16px); width: clamp(56px, 16vw, 90px); height: auto; mix-blend-mode: multiply; animation: splashSpin 1s linear infinite; }
+    @keyframes splashSpin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { #splash { transition: none; } #splash .splash-loader { animation-duration: 2.5s; } }
   </style>
 </head>
 <body>
+  <!-- Splash screen -->
+  <div id="splash" role="status" aria-live="polite" aria-label="Cargando Reportes Electromedicina CHET">
+    <img class="splash-top" src="splash_top.png?v=8" alt="" width="638" height="320">
+    <img class="splash-bottom" src="splash_bottom.png?v=8" alt="" width="638" height="284">
+    <img class="splash-logo" src="splash_logo.png?v=8" alt="Reportes – Electromedicina CHET" width="595" height="446">
+    <img class="splash-loader" src="splash_loader.png?v=8" alt="" width="100" height="100">
+  </div>
   <div class="container">
     <div class="top-bar"><button type="button" class="theme-toggle" id="themeToggle">Modo oscuro</button></div>
     <header>
@@ -794,7 +819,7 @@ Estatus del equipo: ${estatus}`;
       document.documentElement.setAttribute('data-theme', theme);
       $('themeToggle').textContent = theme === 'dark' ? 'Modo claro' : 'Modo oscuro';
       const meta = document.querySelector('meta[name="theme-color"]');
-      if (meta) meta.setAttribute('content', theme === 'dark' ? '#0b1220' : '#0f4c81');
+      if (meta) meta.setAttribute('content', theme === 'dark' ? '#0b1220' : '#0a1f4d');
       try { localStorage.setItem('reporte_tecnico_tema', theme); } catch (e) {}
     }
     $('themeToggle').addEventListener('click', () => {
@@ -806,9 +831,44 @@ Estatus del equipo: ${estatus}`;
     clearDraft();   // cada vez que se abre el archivo empieza un reporte nuevo
     updateShareHint();
 
+    // ---------- Splash: se oculta al terminar de cargar, sin bloquear la app ----------
+    (function () {
+      const splash = document.getElementById('splash');
+      if (!splash) return;
+      const t0 = Date.now();
+      let done = false;
+      function hideSplash() {
+        if (done) return; done = true;
+        const wait = Math.max(0, 700 - (Date.now() - t0));   // visible al menos 0,7 s para que no parpadee
+        setTimeout(() => {
+          splash.classList.add('hide');
+          setTimeout(() => splash.remove(), 500);
+        }, wait);
+      }
+      if (document.readyState === 'complete') hideSplash();
+      else window.addEventListener('load', hideSplash);
+      setTimeout(hideSplash, 4000);                          // tope de seguridad
+    })();
+
     // ---------- Instalación / uso sin internet (PWA) ----------
     if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+      const hadController = !!navigator.serviceWorker.controller;
+      let reloading = false;
+      // Cuando un nuevo Service Worker toma el control, se recarga solo si no hay datos sin guardar
+      // (así nunca se pierde un reporte en curso); si los hay, la actualización se aplica al reabrir.
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!hadController || reloading) return;
+        const tieneDatos = FIELDS.some(f => f !== 'estatus' && val(f) !== '') || photos.length > 0;
+        if (tieneDatos) { showToast('Actualización lista: se aplicará al reabrir la app.', 4000); return; }
+        reloading = true;
+        location.reload();
+      });
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then((reg) => {
+        const check = () => reg.update().catch(() => {});
+        check();
+        document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+        setInterval(check, 60 * 60 * 1000);
+      }).catch(() => {});
     }
   </script>
 </body>
