@@ -786,10 +786,18 @@
       $('scanCapture').style.display='inline-block';$('scanAuto').style.display='none';$('scanRetake').style.display='none';$('scanConfirmPage').style.display='none';
     }
     async function confirmScanPage() {
-      const blob=await warpScan();if(!blob){showToast('No se pudo procesar la página');return;}
-      scanPages.push({blob,at:scanCapturedAt});
-      resetScanCapture();updateScanPageList();showToast('Página agregada al documento');
+      try {
+        const result=await warpScan();
+        if(!result || !result.blob){showToast('No se pudo procesar la página');return;}
+        // Guardar el Blob y sus dimensiones: el generador PDF necesita los tres datos.
+        scanPages.push({blob:result.blob,width:result.width,height:result.height,at:scanCapturedAt || new Date()});
+        resetScanCapture();updateScanPageList();showToast('Página agregada al documento');
+      } catch(e) {
+        console.error('Error al procesar la página escaneada:',e);
+        showToast('No se pudo procesar la página. Intente nuevamente.');
+      }
     }
+
     function asciiBytes(str) { return new TextEncoder().encode(str); }
     function joinBytes(parts) {
       const size=parts.reduce((n,p)=>n+p.length,0),out=new Uint8Array(size);let at=0;
@@ -834,22 +842,54 @@
       return new Blob(chunks,{type:'application/pdf'});
     }
     async function finishScan() {
-      if(!scanPages.length){showToast('Escanee y confirme al menos una página');return;}
-      stopScanCamera();
+      const finishButton=$('scanFinish');
+      if(finishButton.dataset.busy==='1')return;
+      finishButton.dataset.busy='1';
+      finishButton.disabled=true;
+      const originalText=finishButton.textContent;
+      finishButton.textContent='Generando PDF…';
       try {
+        // Si el usuario toma una foto y pulsa directamente Finalizar,
+        // procesar esa captura automáticamente sin exigir otro toque en "Usar página".
+        if(scanRaw) {
+          const result=await warpScan();
+          if(!result || !result.blob) throw new Error('No se pudo procesar la captura actual');
+          scanPages.push({blob:result.blob,width:result.width,height:result.height,at:scanCapturedAt || new Date()});
+          resetScanCapture();
+          updateScanPageList();
+        }
+        if(!scanPages.length) {
+          showToast('Primero tome una fotografía del documento.');
+          return;
+        }
+        stopScanCamera();
         const pdfBlob=await buildLocalPdf(scanPages);
         const clean=x=>(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,55)||'Sin_dato';
-        const date=(scanPages[0]&&scanPages[0].at)||scanCapturedAt||new Date(),ds=[String(date.getDate()).padStart(2,'0'),String(date.getMonth()+1).padStart(2,'0'),date.getFullYear()].join('-');
+        const date=(scanPages[0]&&scanPages[0].at)||scanCapturedAt||new Date();
+        const ds=[String(date.getDate()).padStart(2,'0'),String(date.getMonth()+1).padStart(2,'0'),date.getFullYear()].join('-');
         const name=clean(val('equipo'))+'_'+clean(val('servicio'))+'_'+ds+'.pdf';
         scanPdfFile=new File([pdfBlob],name,{type:'application/pdf',lastModified:Date.now()});
-        if(scanPdfUrl)URL.revokeObjectURL(scanPdfUrl);scanPdfUrl=URL.createObjectURL(scanPdfFile);
-        $('scanPdfDownload').href=scanPdfUrl;$('scanPdfDownload').download=name;$('scanPdfName').textContent=name;
-        $('scanPdfReady').style.display='block';$('scanStatus').textContent=scanPages.length+' página(s) escaneada(s), PDF listo.';
-        $('scannerOverlay').style.display='none';updateShareHint();
+        if(scanPdfUrl)URL.revokeObjectURL(scanPdfUrl);
+        scanPdfUrl=URL.createObjectURL(scanPdfFile);
+        $('scanPdfDownload').href=scanPdfUrl;
+        $('scanPdfDownload').download=name;
+        $('scanPdfName').textContent=name;
+        $('scanPdfReady').style.display='block';
+        $('scanStatus').textContent=scanPages.length+' página(s) escaneada(s), PDF listo.';
+        $('scannerOverlay').style.display='none';
+        updateShareHint();
+        showToast('PDF generado correctamente.');
       } catch(e) {
-        console.error(e);showToast('No se pudo generar el PDF en este dispositivo.');$('scannerOverlay').style.display='flex';
+        console.error('Error al finalizar el escaneo:',e);
+        showToast('No se pudo generar el PDF. Puede volver a intentarlo.');
+        $('scannerOverlay').style.display='flex';
+      } finally {
+        finishButton.disabled=false;
+        finishButton.dataset.busy='0';
+        finishButton.textContent=originalText;
       }
     }
+
     let scanPdfUrl=null;
     function clearScannedDocument() {
       scanPages.forEach(p=>{p.blob=null;});scanPages=[];scanPdfFile=null;
