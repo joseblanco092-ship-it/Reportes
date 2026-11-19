@@ -158,12 +158,6 @@
     #splash .splash-loader { position: relative; margin-top: clamp(4px, 1.5vh, 16px); width: clamp(56px, 16vw, 90px); height: auto; mix-blend-mode: multiply; animation: splashSpin 1s linear infinite; }
     @keyframes splashSpin { to { transform: rotate(360deg); } }
     @media (prefers-reduced-motion: reduce) { #splash { transition: none; } #splash .splash-loader { animation-duration: 2.5s; } }
-
-
-    #scannerOverlay button { cursor:pointer; }
-    #scanEditCanvas { width:min(96vw,760px); height:auto; }
-    #scanPageList button { margin:3px;padding:5px 9px;border-radius:5px;border:1px solid #64748b;background:#17263b;color:#fff; }
-    #scanPdfDownload { margin-top:8px; }
   </style>
 </head>
 <body>
@@ -247,16 +241,6 @@
           <textarea id="recomendaciones" style="min-height:70px" placeholder="Solo aparece en el reporte si se llena."></textarea>
         </div>
 
-        <div class="form-group" id="scanSection">
-          <div class="section-title">¿Desea escanear el reporte?</div>
-          <button type="button" class="btn btn-primary" id="btnOpenScanner">ESCANEAR REPORTE</button>
-          <div class="photo-count" id="scanStatus">Puede escanear varias páginas y generar un PDF independiente.</div>
-          <div id="scanPdfReady" style="display:none;margin-top:10px">
-            <span class="photo-count" id="scanPdfName"></span>
-            <a class="btn btn-outline" id="scanPdfDownload" download="documento.pdf">Descargar PDF</a>
-          </div>
-        </div>
-
         <div class="section-title">Fotografías</div>
 
         <div class="form-group">
@@ -293,8 +277,7 @@
       <label style="color: var(--primary); margin-bottom: 10px;">REPORTE GENERADO:</label>
       <div class="report-output" id="reportOutput"></div>
       <div class="actions-grid">
-        <button type="button" class="btn btn-whatsapp" id="btnWhatsApp">Compartir fotografías por WhatsApp</button>
-        <button type="button" class="btn btn-outline" id="btnCompartirPDF">Compartir PDF por WhatsApp</button>
+        <a class="btn btn-whatsapp" id="btnWhatsApp" href="https://wa.me/" target="_blank" rel="noopener">Compartir por WhatsApp</a>
         <a class="btn btn-outline" id="btnWhatsAppTexto" href="https://wa.me/" target="_blank" rel="noopener">Enviar solo texto a WhatsApp</a>
         <button type="button" class="btn btn-copy" id="btnCopiar">Copiar reporte</button>
         <p class="hint" id="shareHint"></p>
@@ -303,22 +286,6 @@
     </div>
   </div>
 
-  <div id="scannerOverlay" style="display:none;position:fixed;inset:0;z-index:10001;background:#07111f;color:white;flex-direction:column">
-    <div style="padding:12px 16px;display:flex;justify-content:space-between;align-items:center"><strong>Escáner de documentos</strong><button type="button" id="scanClose" class="cam-btn">Cerrar</button></div>
-    <video id="scanVideo" autoplay playsinline muted style="width:100%;flex:1;min-height:0;object-fit:contain;background:#000"></video>
-    <canvas id="scanEditCanvas" style="display:none;max-width:100%;max-height:70vh;object-fit:contain;touch-action:none;margin:auto"></canvas>
-    <div id="scanEditHelp" style="display:none;text-align:center;padding:5px 12px;font-size:13px;color:#dbeafe">Arrastre los cuatro círculos hasta las esquinas del documento para ajustar el recorte y la perspectiva.</div>
-    <div id="scanProgress" role="status" aria-live="polite" style="min-height:20px;padding:4px 12px;text-align:center;font-size:13px;color:#bae6fd"></div>
-    <div style="padding:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
-      <button type="button" id="scanCapture" class="cam-btn">Capturar página</button>
-      <button type="button" id="scanAuto" class="cam-btn" style="display:none">Detectar bordes</button>
-      <button type="button" id="scanRetake" class="cam-btn" style="display:none">Repetir</button>
-      <button type="button" id="scanAddPage" class="cam-btn" style="display:none">Agregar página</button>
-      <button type="button" id="scanConfirmPage" class="cam-btn" style="display:none">Usar página</button>
-      <button type="button" id="scanFinish" class="cam-btn">Finalizar PDF (0)</button>
-    </div>
-    <div id="scanPageList" style="padding:0 14px 14px;text-align:center;font-size:13px"></div>
-  </div>
   <div id="toast" role="status" aria-live="polite"></div>
 
   <script>
@@ -328,7 +295,6 @@
     let toastTimer = null;
     let photoSeq = 0;            // para dar nombre único a cada foto
     let photoQueue = Promise.resolve();   // procesa las fotos de una en una, en orden
-    let photosPending = 0;
 
     const $ = (id) => document.getElementById(id);
     const FIELDS = ['servicio','equipo','marca','modelo','serial','bienNacional','fallas','trabajos','estatus','recomendaciones'];
@@ -421,7 +387,6 @@
     // Punto único de entrada para fotos (cámara y galería). Se encolan para conservar el orden.
     function addPhotoFiles(files) {
       if (!files.length) return;
-      photosPending += files.length;
       showToast('Procesando fotografías...', 1500);
       photoQueue = photoQueue.then(async () => {
         for (const f of files) {
@@ -430,9 +395,7 @@
           photos.push({ file: named, url: URL.createObjectURL(named) });
         }
         renderPhotoGrid();
-      }).catch(() => showToast('No se pudo procesar una fotografía')).finally(() => {
-        photosPending = Math.max(0, photosPending - files.length);
-      });
+      }).catch(() => showToast('No se pudo procesar una fotografía'));
     }
 
     // ---------- Cámara dentro de la app ----------
@@ -638,323 +601,6 @@
       rebuildCollage();
     });
 
-    // ---------- Escáner multipágina y PDF local ----------
-    let scanStream = null, scanRaw = null, scanCorners = [], scanPages = [], scanPdfFile = null;
-    let scanCapturedAt = null, scanDragging = -1, scanCanvasScale = 1;
-    let cvPromise = null;
-    function loadScriptOnce(src, test) {
-      if (test()) return Promise.resolve();
-      return new Promise((resolve, reject) => {
-        const old = document.querySelector('script[data-lib="' + src + '"]');
-        if (old) { old.addEventListener('load', resolve, {once:true}); old.addEventListener('error', reject, {once:true}); return; }
-        const sc = document.createElement('script'); sc.src = src; sc.async = true; sc.dataset.lib = src;
-        sc.onload = resolve; sc.onerror = reject; document.head.appendChild(sc);
-      });
-    }
-    async function loadOpenCV() {
-      if (!cvPromise) cvPromise = loadScriptOnce('https://docs.opencv.org/4.x/opencv.js', () => !!window.cv && !!cv.Mat)
-        .then(() => new Promise((resolve, reject) => {
-          if (window.cv && cv.Mat) return resolve();
-          const timeout = setTimeout(() => reject(new Error('OpenCV no disponible')), 18000);
-          cv.onRuntimeInitialized = () => { clearTimeout(timeout); resolve(); };
-        }));
-      return cvPromise;
-    }
-    function stopScanCamera() {
-      if (scanStream) { scanStream.getTracks().forEach(t => t.stop()); scanStream = null; }
-      $('scanVideo').srcObject = null;
-    }
-    async function openScanner() {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        showToast('La cámara requiere HTTPS y un navegador compatible'); return;
-      }
-      $('scannerOverlay').style.display = 'flex';
-      $('scanVideo').style.display = 'block'; $('scanEditCanvas').style.display = 'none';
-      try {
-        scanStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'},width:{ideal:1600},height:{ideal:1200}},audio:false});
-        $('scanVideo').srcObject = scanStream; await $('scanVideo').play();
-      } catch (e) {
-        stopScanCamera(); $('scannerOverlay').style.display = 'none';
-        showToast('No se pudo acceder a la cámara. Verifique el permiso y HTTPS.'); return;
-      }
-      scanRaw = null; scanCapturedAt = null;
-      $('scanCapture').style.display = 'inline-block'; $('scanAuto').style.display = 'none';
-      $('scanRetake').style.display = 'none'; $('scanAddPage').style.display = 'none'; $('scanConfirmPage').style.display = 'none';
-      updateScanPageList();
-    }
-    function drawScanEditor() {
-      const c = $('scanEditCanvas'), ctx = c.getContext('2d');
-      c.width = scanRaw.width; c.height = scanRaw.height;
-      ctx.drawImage(scanRaw,0,0);
-      ctx.fillStyle = 'rgba(0,0,0,.18)';
-      ctx.beginPath(); scanCorners.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)); ctx.closePath(); ctx.fill();
-      ctx.strokeStyle='#22d3ee';ctx.lineWidth=Math.max(3,c.width/350);ctx.beginPath();
-      scanCorners.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));ctx.closePath();ctx.stroke();
-      scanCorners.forEach(p=>{ctx.beginPath();ctx.arc(p.x,p.y,Math.max(12,c.width/55),0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();ctx.lineWidth=4;ctx.strokeStyle='#0891b2';ctx.stroke();});
-    }
-    function setDefaultCorners() {
-      const w=scanRaw.width,h=scanRaw.height,mx=w*.07,my=h*.07;
-      scanCorners=[{x:mx,y:my},{x:w-mx,y:my},{x:w-mx,y:h-my},{x:mx,y:h-my}];
-      drawScanEditor();
-    }
-    async function detectScanEdges() {
-      try {
-        await loadOpenCV();
-        const src=cv.imread(scanRaw), gray=new cv.Mat(), blur=new cv.Mat(), edges=new cv.Mat(), contours=new cv.MatVector(), hierarchy=new cv.Mat();
-        try {
-          cv.cvtColor(src,gray,cv.COLOR_RGBA2GRAY);cv.GaussianBlur(gray,blur,new cv.Size(5,5),0);
-          cv.Canny(blur,edges,45,140);cv.findContours(edges,contours,hierarchy,cv.RETR_LIST,cv.CHAIN_APPROX_SIMPLE);
-          let best=null,bestArea=0;
-          for(let i=0;i<contours.size();i++){
-            const cnt=contours.get(i), peri=cv.arcLength(cnt,true), approx=new cv.Mat();
-            cv.approxPolyDP(cnt,approx,.025*peri,true);
-            if(approx.rows===4){
-              const area=Math.abs(cv.contourArea(approx));
-              if(area>bestArea && area>src.cols*src.rows*.12){
-                bestArea=area;best=[];
-                for(let j=0;j<4;j++){const d=approx.intPtr(j,0);best.push({x:d[0],y:d[1]});}
-              }
-            }
-            cnt.delete();approx.delete();
-          }
-          if(best){
-            const cx=best.reduce((a,p)=>a+p.x,0)/4,cy=best.reduce((a,p)=>a+p.y,0)/4;
-            best.sort((a,b)=>Math.atan2(a.y-cy,a.x-cx)-Math.atan2(b.y-cy,b.x-cx));
-            let k=best.reduce((bi,p,i)=>p.x+p.y<best[bi].x+best[bi].y?i:bi,0);
-            scanCorners=best.slice(k).concat(best.slice(0,k));drawScanEditor();
-            showToast('Bordes detectados. Puede ajustar las cuatro esquinas.');
-          } else showToast('No se detectaron bordes; ajuste las esquinas manualmente.');
-        } finally {src.delete();gray.delete();blur.delete();edges.delete();contours.delete();hierarchy.delete();}
-      } catch(e) { showToast('Detección automática no disponible; ajuste las esquinas manualmente.'); }
-    }
-    function pointerToScan(e) {
-      const r=$('scanEditCanvas').getBoundingClientRect();
-      return {x:(e.clientX-r.left)*scanRaw.width/r.width,y:(e.clientY-r.top)*scanRaw.height/r.height};
-    }
-    $('scanEditCanvas').addEventListener('pointerdown',e=>{
-      if(!scanRaw)return;const p=pointerToScan(e);
-      scanDragging=scanCorners.reduce((best,q,i)=>Math.hypot(q.x-p.x,q.y-p.y)<Math.hypot(scanCorners[best].x-p.x,scanCorners[best].y-p.y)?i:best,0);
-      $('scanEditCanvas').setPointerCapture(e.pointerId);
-    });
-    $('scanEditCanvas').addEventListener('pointermove',e=>{
-      if(scanDragging<0)return;const p=pointerToScan(e);
-      scanCorners[scanDragging]={x:Math.max(0,Math.min(scanRaw.width,p.x)),y:Math.max(0,Math.min(scanRaw.height,p.y))};drawScanEditor();
-    });
-    $('scanEditCanvas').addEventListener('pointerup',()=>scanDragging=-1);
-    $('scanEditCanvas').addEventListener('pointercancel',()=>scanDragging=-1);
-    function solveLinear(A,b) {
-      const n=b.length;for(let i=0;i<n;i++){let max=i;for(let j=i+1;j<n;j++)if(Math.abs(A[j][i])>Math.abs(A[max][i]))max=j;
-        [A[i],A[max]]=[A[max],A[i]];[b[i],b[max]]=[b[max],b[i]];
-        const d=A[i][i];if(Math.abs(d)<1e-10)throw Error('Geometría inválida');
-        for(let k=i;k<n;k++)A[i][k]/=d;b[i]/=d;
-        for(let j=0;j<n;j++)if(j!==i){const f=A[j][i];for(let k=i;k<n;k++)A[j][k]-=f*A[i][k];b[j]-=f*b[i];}}
-      return b;
-    }
-    async function warpScan() {
-      if (!scanRaw || !scanRaw.width || !scanRaw.height || scanCorners.length !== 4) {
-        throw new Error('No hay una captura válida para procesar.');
-      }
-      const pts=scanCorners.map(p=>({x:Number(p.x),y:Number(p.y)}));
-      if (pts.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y))) throw new Error('Las esquinas del documento no son válidas.');
-      const top=Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y);
-      const bottom=Math.hypot(pts[2].x-pts[3].x,pts[2].y-pts[3].y);
-      const left=Math.hypot(pts[3].x-pts[0].x,pts[3].y-pts[0].y);
-      const right=Math.hypot(pts[2].x-pts[1].x,pts[2].y-pts[1].y);
-      const w=Math.min(1600,Math.max(700,Math.round(Math.max(top,bottom))));
-      const h=Math.min(2200,Math.max(700,Math.round(w*Math.max(left,right)/Math.max(1,Math.max(top,bottom)))));
-      if (!Number.isFinite(w)||!Number.isFinite(h)||w<1||h<1) throw new Error('No se pudo calcular el tamaño de la página.');
-      const dst=[{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}],A=[],b=[];
-      for(let i=0;i<4;i++){const {x,y}=pts[i],X=dst[i].x,Y=dst[i].y;A.push([X,Y,1,0,0,0,-x*X,-x*Y]);b.push(x);A.push([0,0,0,X,Y,1,-y*X,-y*Y]);b.push(y);}
-      const q=solveLinear(A,b),out=document.createElement('canvas');out.width=w;out.height=h;
-      const ctx=out.getContext('2d',{willReadFrequently:false});
-      if(!ctx) throw new Error('El navegador no pudo crear el lienzo de procesamiento.');
-      const img=ctx.createImageData(w,h),src=scanRaw.getContext('2d',{willReadFrequently:true}).getImageData(0,0,scanRaw.width,scanRaw.height),d=img.data;
-      // Procesamiento por bloques: permite que Chrome actualice la pantalla y responda
-      // durante el cálculo, evitando congelar el hilo principal en teléfonos Android.
-      const yieldFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
-      const blockRows=24;
-      for(let y0=0;y0<h;y0+=blockRows){
-        const yEnd=Math.min(h,y0+blockRows);
-        for(let Y=y0;Y<yEnd;Y++)for(let X=0;X<w;X++){
-          const den=q[6]*X+q[7]*Y+1;
-          if(!Number.isFinite(den)||Math.abs(den)<1e-10) throw new Error('La perspectiva calculada no es válida.');
-          const sx=(q[0]*X+q[1]*Y+q[2])/den,sy=(q[3]*X+q[4]*Y+q[5])/den;
-          const ix=Math.max(0,Math.min(scanRaw.width-1,Math.round(sx))),iy=Math.max(0,Math.min(scanRaw.height-1,Math.round(sy)));
-          const si=(iy*scanRaw.width+ix)*4,di=(Y*w+X)*4;
-          for(let c=0;c<3;c++)d[di+c]=Math.max(0,Math.min(255,(src.data[si+c]-128)*1.12+138));
-          d[di+3]=255;
-        }
-        if(yEnd<h) await yieldFrame();
-      }
-      ctx.putImageData(img,0,0);
-      const blob=await new Promise((resolve,reject)=>out.toBlob(value=>value?resolve(value):reject(new Error('Chrome no pudo codificar la página escaneada.')),'image/jpeg',.88));
-      out.width=out.height=0;
-      if(!blob.size) throw new Error('La página procesada quedó vacía.');
-      return {blob,width:w,height:h};
-    }
-    async function captureScanPage() {
-      const v=$('scanVideo');if(!v.videoWidth)return;
-      const scale=Math.min(1,1600/Math.max(v.videoWidth,v.videoHeight)),c=document.createElement('canvas');
-      c.width=Math.round(v.videoWidth*scale);c.height=Math.round(v.videoHeight*scale);
-      c.getContext('2d').drawImage(v,0,0,c.width,c.height);
-      scanRaw=c;scanCapturedAt=new Date();setDefaultCorners();
-      $('scanVideo').style.display='none';$('scanEditCanvas').style.display='block';$('scanEditHelp').style.display='block';
-      $('scanCapture').style.display='none';$('scanAuto').style.display='inline-block';$('scanRetake').style.display='inline-block';$('scanConfirmPage').style.display='inline-block';
-      await detectScanEdges();
-    }
-    function updateScanPageList() {
-      $('scanFinish').textContent='Finalizar PDF ('+scanPages.length+')';
-      const box=$('scanPageList');box.innerHTML='';
-      if(!scanPages.length){box.textContent='Aún no hay páginas confirmadas.';return;}
-      $('scanCapture').textContent=scanPages.length?'Capturar siguiente página':'Capturar página';
-      box.appendChild(document.createTextNode(scanPages.length+' página(s): '));
-      scanPages.forEach((pg,i)=>{const b=document.createElement('button');b.type='button';b.textContent='Eliminar '+(i+1);b.setAttribute('aria-label','Eliminar página '+(i+1));b.addEventListener('click',()=>{scanPages.splice(i,1);updateScanPageList();});box.appendChild(b);});
-    }
-    function resetScanCapture() {
-      if(scanRaw){scanRaw.width=scanRaw.height=0;scanRaw=null;}
-      $('scanEditCanvas').style.display='none';$('scanEditHelp').style.display='none';$('scanVideo').style.display='block';
-      $('scanCapture').style.display='inline-block';$('scanAuto').style.display='none';$('scanRetake').style.display='none';$('scanConfirmPage').style.display='none';
-    }
-    async function confirmScanPage() {
-      try {
-        const result=await warpScan();
-        if(!result || !result.blob){showToast('No se pudo procesar la página');return;}
-        // Guardar el Blob y sus dimensiones: el generador PDF necesita los tres datos.
-        scanPages.push({blob:result.blob,width:result.width,height:result.height,at:scanCapturedAt || new Date()});
-        resetScanCapture();updateScanPageList();showToast('Página agregada al documento');
-      } catch(e) {
-        console.error('Error al procesar la página escaneada:',e);
-        showToast('No se pudo procesar la página. Intente nuevamente.');
-      }
-    }
-
-    function asciiBytes(str) { return new TextEncoder().encode(str); }
-    function joinBytes(parts) {
-      const size=parts.reduce((n,p)=>n+p.length,0),out=new Uint8Array(size);let at=0;
-      for(const p of parts){out.set(p,at);at+=p.length;}return out;
-    }
-    async function buildLocalPdf(pages) {
-      if(!Array.isArray(pages)||!pages.length) throw new Error('No hay páginas confirmadas para incluir en el PDF.');
-      for(let i=0;i<pages.length;i++){
-        const p=pages[i];
-        if(!p||!p.blob||typeof p.blob.arrayBuffer!=='function'||!Number.isFinite(p.width)||!Number.isFinite(p.height)||p.width<1||p.height<1)
-          throw new Error('La página '+(i+1)+' no contiene una imagen válida.');
-      }
-      const count=pages.length,objects=new Array(2+count*3),chunks=[];
-      objects[1]='<< /Type /Catalog /Pages 2 0 R >>';
-      const kids=[];
-      for(let i=0;i<count;i++)kids.push((3+i*3)+' 0 R');
-      objects[2]='<< /Type /Pages /Kids ['+kids.join(' ')+'] /Count '+count+' >>';
-      for(let i=0;i<count;i++){
-        const page=pages[i],pageId=3+i*3,imageId=pageId+1,contentId=pageId+2;
-        const pw=595.28,ph=841.89,margin=14.17,scale=Math.min((pw-2*margin)/page.width,(ph-2*margin)/page.height);
-        const dw=page.width*scale,dh=page.height*scale,x=(pw-dw)/2,y=(ph-dh)/2;
-        objects[pageId]='<< /Type /Page /Parent 2 0 R /MediaBox [0 0 '+pw+' '+ph+'] /Resources << /XObject << /Im0 '+imageId+' 0 R >> >> /Contents '+contentId+' 0 R >>';
-        const jpeg=new Uint8Array(await page.blob.arrayBuffer());
-        objects[imageId]={image:jpeg,width:page.width,height:page.height};
-        const content='q\n'+dw+' 0 0 '+dh+' '+x+' '+y+' cm\n/Im0 Do\nQ';
-        objects[contentId]={stream:asciiBytes(content)};
-      }
-      const header=new Uint8Array([37,80,68,70,45,49,46,52,10,37,226,227,207,211,10]);
-      chunks.push(header);let offset=header.length;const offsets=[0];
-      for(let id=1;id<objects.length;id++){
-        offsets[id]=offset;
-        const obj=objects[id],head=asciiBytes(id+' 0 obj\n');
-        chunks.push(head);offset+=head.length;
-        if(typeof obj==='string'){
-          const body=asciiBytes(obj+'\nendobj\n');chunks.push(body);offset+=body.length;
-        } else if(obj.image){
-          const dict=asciiBytes('<< /Type /XObject /Subtype /Image /Width '+obj.width+' /Height '+obj.height+' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length '+obj.image.length+' >>\nstream\n');
-          const tail=asciiBytes('\nendstream\nendobj\n');chunks.push(dict,obj.image,tail);offset+=dict.length+obj.image.length+tail.length;
-        } else {
-          const dict=asciiBytes('<< /Length '+obj.stream.length+' >>\nstream\n'),tail=asciiBytes('\nendstream\nendobj\n');
-          chunks.push(dict,obj.stream,tail);offset+=dict.length+obj.stream.length+tail.length;
-        }
-      }
-      const xrefOffset=offset,xref=['xref\n0 '+objects.length,'0000000000 65535 f '];
-      for(let id=1;id<objects.length;id++)xref.push(String(offsets[id]).padStart(10,'0')+' 00000 n ');
-      const trailer='\ntrailer\n<< /Size '+objects.length+' /Root 1 0 R >>\nstartxref\n'+xrefOffset+'\n%%EOF';
-      chunks.push(asciiBytes(xref.join('\n')+trailer));
-      return new Blob(chunks,{type:'application/pdf'});
-    }
-    async function finishScan() {
-      const finishButton=$('scanFinish');
-      if(finishButton.dataset.busy==='1')return;
-      if(!scanRaw&&!scanPages.length){showToast('Primero tome una fotografía del documento.');return;}
-      finishButton.dataset.busy='1';
-      finishButton.disabled=true;
-      const originalText=finishButton.textContent;
-      const progress=$('scanProgress');
-      const paint=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
-      finishButton.textContent='Generando PDF…';
-      progress.textContent='Preparando las páginas…';
-      try {
-        // Si hay una captura aún sin confirmar, se incorpora automáticamente sin perderla.
-        if(scanRaw) {
-          progress.textContent='Corrigiendo perspectiva de la captura…';
-          await paint();
-          const result=await warpScan();
-          if(!result||!result.blob) throw new Error('No se pudo procesar la captura actual.');
-          scanPages.push({blob:result.blob,width:result.width,height:result.height,at:scanCapturedAt||new Date()});
-          resetScanCapture();
-          updateScanPageList();
-        }
-        if(!scanPages.length) throw new Error('No hay páginas escaneadas para generar el documento.');
-        stopScanCamera();
-        progress.textContent='Generando PDF: '+scanPages.length+' página(s)…';
-        $('scanStatus').textContent='Generando PDF localmente…';
-        await paint();
-        const pdfBlob=await buildLocalPdf(scanPages);
-        if(!pdfBlob||pdfBlob.type!=='application/pdf'||pdfBlob.size<100) throw new Error('El generador no produjo un PDF válido.');
-        const clean=x=>(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,55)||'Sin_dato';
-        const date=(scanPages[0]&&scanPages[0].at instanceof Date)?scanPages[0].at:new Date();
-        const ds=[String(date.getDate()).padStart(2,'0'),String(date.getMonth()+1).padStart(2,'0'),date.getFullYear()].join('-');
-        const name=clean(val('equipo'))+'_'+clean(val('servicio'))+'_'+ds+'.pdf';
-        const newFile=new File([pdfBlob],name,{type:'application/pdf',lastModified:Date.now()});
-        const newUrl=URL.createObjectURL(newFile);
-        if(scanPdfUrl)URL.revokeObjectURL(scanPdfUrl);
-        scanPdfFile=newFile;scanPdfUrl=newUrl;
-        $('scanPdfDownload').href=scanPdfUrl;
-        $('scanPdfDownload').download=name;
-        $('scanPdfName').textContent=name;
-        $('scanPdfReady').style.display='block';
-        $('scanStatus').textContent=scanPages.length+' página(s) escaneada(s), PDF listo.';
-        progress.textContent='PDF generado correctamente.';
-        $('scannerOverlay').style.display='none';
-        updateShareHint();
-        showToast('PDF generado correctamente.');
-      } catch(e) {
-        console.error('Error al finalizar el escaneo:',e);
-        const reason=(e&&e.message)?e.message:'Error desconocido del navegador.';
-        progress.textContent='No se pudo generar el PDF: '+reason+' Las páginas se conservaron; puede volver a intentarlo.';
-        $('scanStatus').textContent='Error al generar el PDF. Las páginas escaneadas se conservaron.';
-        showToast('Error al generar PDF: '+reason,5000);
-        $('scannerOverlay').style.display='flex';
-      } finally {
-        finishButton.disabled=false;
-        finishButton.dataset.busy='0';
-        finishButton.textContent=originalText;
-      }
-    }
-
-    let scanPdfUrl=null;
-    function clearScannedDocument() {
-      scanPages.forEach(p=>{p.blob=null;});scanPages=[];scanPdfFile=null;
-      if(scanPdfUrl){URL.revokeObjectURL(scanPdfUrl);scanPdfUrl=null;}
-      $('scanPdfReady').style.display='none';$('scanStatus').textContent='Puede escanear varias páginas y generar un PDF independiente.';
-      updateScanPageList();
-    }
-    $('btnOpenScanner').addEventListener('click',openScanner);
-    $('scanClose').addEventListener('click',()=>{stopScanCamera();$('scannerOverlay').style.display='none';});
-    $('scanCapture').addEventListener('click',captureScanPage);
-    $('scanAuto').addEventListener('click',detectScanEdges);
-    $('scanRetake').addEventListener('click',()=>{resetScanCapture();});
-    $('scanConfirmPage').addEventListener('click',confirmScanPage);
-    $('scanFinish').addEventListener('click',finishScan);
-    document.addEventListener('visibilitychange',()=>{if(document.hidden&&scanStream){stopScanCamera();$('scannerOverlay').style.display='none';}});
-
-
-
     // ---------- Reporte (formato original) ----------
     function buildReport() {
       const servicio = val('servicio');
@@ -1020,7 +666,11 @@ Estatus del equipo: ${estatus}`;
     });
 
     function updateShareHint() {
-      $('shareHint').textContent = 'Las fotografías y el PDF se comparten por separado mediante el menú nativo de Android. Seleccione WhatsApp. Si el navegador no admite adjuntos, los archivos se descargarán para adjuntarlos manualmente. La aplicación no puede confirmar la entrega.';
+      $('shareHint').textContent = photos.length
+        ? (collageState === 'ready' || collageState === 'building'
+            ? 'Con collage: se usa el menú de compartir del teléfono y se envía una sola imagen. Si no responde, use «Enviar solo texto».'
+            : 'Con fotos: se usa el menú de compartir del teléfono. Si no responde, use «Enviar solo texto».')
+        : 'Sin fotos: se abre WhatsApp directamente con el texto.';
     }
 
     // ---------- Copiar ----------
@@ -1050,29 +700,14 @@ Estatus del equipo: ${estatus}`;
       document.body.removeChild(ta);
     }
 
-    // ---------- Compartición nativa de archivos (fotografías y PDF por separado) ----------
-    let shareUnlockTimer = null;
-
-    function lockShare() {
+    // ---------- WhatsApp ----------
+    function lockShare(ms = 1200) {
       shareLocked = true;
-      if (shareUnlockTimer) clearTimeout(shareUnlockTimer);
-      // Respaldo por si el navegador no resuelve la promesa del menú nativo.
-      shareUnlockTimer = setTimeout(() => {
-        shareLocked = false;
-        shareUnlockTimer = null;
-      }, 30000);
+      setTimeout(() => { shareLocked = false; }, ms);
     }
 
-    function unlockShare() {
-      shareLocked = false;
-      if (shareUnlockTimer) clearTimeout(shareUnlockTimer);
-      shareUnlockTimer = null;
-    }
-
-    function setStatus(msg) {
-      $('shareStatus').textContent = msg;
-    }
-
+    // Abre WhatsApp con el texto en una pestaña nueva (así la página conserva las fotos).
+    // Se hace con un enlace real (como el botón de solo texto), que es lo que funciona en el teléfono.
     function openWhatsAppText(text) {
       const a = document.createElement('a');
       a.href = waUrl(text);
@@ -1080,196 +715,101 @@ Estatus del equipo: ${estatus}`;
       a.rel = 'noopener';
       document.body.appendChild(a);
       a.click();
-      a.remove();
+      document.body.removeChild(a);
     }
 
-    function downloadFile(file) {
-      if (!file || !(file instanceof Blob) || file.size <= 0) return false;
-      const url = URL.createObjectURL(file);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = file.name || 'archivo';
-      a.style.display = 'none';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      // Android necesita tiempo para iniciar la descarga antes de revocar el objeto.
-      setTimeout(() => URL.revokeObjectURL(url), 60000);
-      return true;
-    }
-
-    function normalizePhotoForShare(source, index) {
-      if (!source || !(source instanceof Blob) || source.size <= 0) return null;
-      let type = (source.type || '').toLowerCase();
-      if (type === 'image/jpg') type = 'image/jpeg';
-      if (!type.startsWith('image/')) return null;
-      const ext = type === 'image/png' ? 'png' :
-                  type === 'image/webp' ? 'webp' :
-                  type === 'image/heic' ? 'heic' :
-                  type === 'image/heif' ? 'heif' : 'jpg';
-      const name = (source.name && /\.[a-z0-9]+$/i.test(source.name))
-        ? source.name : 'fotografia_' + String(index + 1).padStart(2, '0') + '.' + ext;
-      if (typeof File === 'undefined') return null;
-      // Crear un File explícito asegura nombre y MIME correctos para Android Share.
-      return new File([source], name, { type, lastModified: Date.now() });
-    }
-
-    function validPhotoFiles() {
-      if (typeof File === 'undefined') return [];
-      if (photos.length >= 2 && collageOn && collageState === 'ready' &&
-          collageFile instanceof Blob && collageFile.size > 0) {
-        return [new File([collageFile], 'collage.jpg', {
-          type: 'image/jpeg', lastModified: Date.now()
-        })];
-      }
-      return photos.map((photo, index) => normalizePhotoForShare(photo && photo.file, index))
-        .filter(file => file instanceof File && file.size > 0);
-    }
-
-    function canShareFiles(files) {
-      if (!files.length || typeof navigator.share !== 'function' ||
-          typeof navigator.canShare !== 'function') return false;
-      try {
-        return navigator.canShare({ files });
-      } catch (error) {
-        console.warn('No se pudo comprobar Web Share para estos archivos:', error);
-        return false;
-      }
-    }
-
-    function shareFallback(files, text, kind) {
-      let count = 0;
-      files.forEach(file => { if (downloadFile(file)) count++; });
-      if (count) {
-        setStatus('Se descargaron ' + count + ' archivo(s). No se enviaron a WhatsApp. Abra el chat y adjúntelos manualmente.');
-        showToast('Archivos descargados; debe adjuntarlos manualmente en WhatsApp.', 4500);
-      } else {
-        setStatus('No se encontraron archivos válidos para descargar. Se abrirá WhatsApp con el texto del reporte.');
-        showToast('No hay archivos válidos para compartir.', 3500);
-      }
-      openWhatsAppText(text);
-      unlockShare();
-    }
-
-    function shareFiles(files, kind, text) {
-      if (!files.length) {
-        setStatus(kind === 'PDF' ? 'No hay un PDF válido generado.' : 'No hay fotografías válidas para compartir.');
-        showToast(kind === 'PDF' ? 'Primero genere el PDF.' : 'No se encontraron fotografías válidas.', 3000);
-        unlockShare();
-        return;
-      }
-
-      if (!canShareFiles(files)) {
-        setStatus('Este navegador no permite adjuntar estos archivos desde el menú nativo. Se descargarán para adjuntarlos manualmente.');
-        shareFallback(files, text, kind);
-        return;
-      }
-
-      setStatus('Selecciona WhatsApp en el menú de Android para compartir ' +
-        (kind === 'PDF' ? 'el PDF como documento' : 'las fotografías') + '.');
-      let sharePromise;
-      try {
-        // IMPORTANTE: se envían solamente los archivos. El texto se comparte con el botón
-        // independiente para evitar que algunos receptores de Android ignoren los adjuntos.
-        // Esta llamada ocurre sin await dentro del evento del botón (requiere gesto del usuario).
-        sharePromise = navigator.share({ files });
-      } catch (error) {
-        if (error && error.name === 'AbortError') {
-          setStatus('Compartición cancelada. No se envió ningún archivo.');
-          unlockShare();
-          return;
-        }
-        console.error('Error al abrir el menú nativo de compartir:', error);
-        setStatus('No se pudo abrir el menú para compartir. Se descargarán los archivos.');
-        shareFallback(files, text, kind);
-        return;
-      }
-
-      Promise.resolve(sharePromise).then(() => {
-        setStatus('El menú de compartir se cerró. Android no informa si WhatsApp entregó el archivo; verifica el mensaje antes de continuar.');
-        unlockShare();
-      }).catch(error => {
-        if (error && error.name === 'AbortError') {
-          setStatus('Compartición cancelada por el usuario. No se confirmó ningún envío.');
-          unlockShare();
-          return;
-        }
-        console.error('Falló la compartición nativa:', error);
-        setStatus('No se pudo completar la compartición. Se descargarán los archivos para adjuntarlos manualmente.');
-        shareFallback(files, text, kind);
-      });
-    }
-
+    // Enlace "solo texto": es un <a> real, el toque del usuario lo abre directamente.
     $('btnWhatsAppTexto').addEventListener('click', (e) => {
       if (shareLocked) { e.preventDefault(); return; }
+      lockShare();
       $('btnWhatsAppTexto').href = waUrl(refreshReport());
     });
 
-    $('btnWhatsApp').addEventListener('click', () => {
-      if (shareLocked) return;
-      lockShare();
-      const text = refreshReport();
+    let shareCount = 0;
 
-      if (photosPending > 0) {
-        setStatus('Las fotografías todavía se están procesando. Espere a que aparezcan en la vista previa y vuelva a tocar el botón.');
-        showToast('Espere a que termine el procesamiento de las fotografías.', 3500);
-        unlockShare();
+    function setStatus(msg) { $('shareStatus').textContent = msg; }
+
+    function shareFailed(err, text, n) {
+      const name = (err && err.name) || 'error';
+      if (name === 'AbortError') {
+        setStatus('Toque ' + n + ': el menú de compartir se cerró o se canceló.');
         return;
       }
+      console.warn('Fallo al compartir:', err);
+      setStatus('Toque ' + n + ': error al compartir (' + name + (err && err.message ? ': ' + err.message : '') + '). Se abrió WhatsApp con el texto.');
+      showToast('No se pudo abrir el menú de compartir (' + name + '). Abriendo WhatsApp con el texto...', 4000);
+      openWhatsAppText(text);
+    }
+
+    $('btnWhatsApp').addEventListener('click', (e) => {
+      shareCount++;
+      const n = shareCount;
+      if (shareLocked) { e.preventDefault(); return; }
+      lockShare();
+
+      const text = refreshReport();
+      $('btnWhatsApp').href = waUrl(text);
+
+      // Sin fotos: el propio enlace abre WhatsApp (igual que "solo texto").
       if (!photos.length) {
-        setStatus('Este reporte no tiene fotografías. Use «Enviar solo texto a WhatsApp» si desea compartir el texto.');
-        showToast('No hay fotografías adjuntas.', 3000);
-        unlockShare();
+        setStatus('Toque ' + n + ': sin fotos, abriendo WhatsApp con el texto.');
         return;
       }
 
-      let files = validPhotoFiles();
+      // Con fotos: se cancela el enlace y se usa el menú de compartir.
+      e.preventDefault();
+
       if (collageState === 'building') {
-        // No esperar al collage: navigator.share debe ejecutarse dentro del gesto del usuario.
-        // Se comparten las fotografías originales ya procesadas.
-        files = photos.map((photo, index) => normalizePhotoForShare(photo && photo.file, index))
-          .filter(file => file instanceof File && file.size > 0);
-        setStatus('El collage sigue procesándose; se compartirán las fotografías originales.');
-      } else if (collageOn && collageState === 'ready') {
-        setStatus('Collage listo. Preparando la imagen para compartir.');
-      } else {
-        setStatus('Preparando fotografías originales para compartir.');
-      }
-      shareFiles(files, 'FOTOGRAFÍAS', text);
-    });
-
-    $('btnCompartirPDF').addEventListener('click', () => {
-      if (shareLocked) return;
-      lockShare();
-      const text = refreshReport();
-      if (typeof File === 'undefined' || !scanPdfFile ||
-          !(scanPdfFile instanceof Blob) || scanPdfFile.size <= 0 ||
-          scanPdfFile.type !== 'application/pdf') {
-        setStatus('No existe un PDF válido. Primero escanee las páginas y genere el PDF.');
-        showToast('Primero genere el PDF del escáner.', 3000);
-        unlockShare();
+        setStatus('Toque ' + n + ': el collage aún se está creando, intente de nuevo en un momento.');
+        showToast('Creando el collage... intente de nuevo en un momento', 3000);
         return;
       }
-      const pdf = new File([scanPdfFile], scanPdfFile.name || 'reporte.pdf', {
-        type: 'application/pdf', lastModified: Date.now()
-      });
-      setStatus('Preparando el PDF como documento adjunto.');
-      shareFiles([pdf], 'PDF', text);
+
+      if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') {
+        setStatus('Toque ' + n + ': este navegador no tiene menú de compartir (¿página abierta como archivo local?). Se abrió WhatsApp con el texto.');
+        showToast('Este navegador no puede adjuntar fotos. Se envía solo el texto.', 3500);
+        openWhatsAppText(text);
+        return;
+      }
+
+      // Archivos nuevos en cada intento, para no reutilizar objetos ya consumidos por un envío anterior.
+      const sources = (collageState === 'ready' && collageFile) ? [collageFile] : photos.map(ph => ph.file);
+      const files = sources.map(f => new File([f], f.name, { type: f.type, lastModified: Date.now() }));
+      const data = { text, files };
+
+      let can = false;
+      try { can = navigator.canShare(data); } catch (err) {}
+      if (!can) {
+        setStatus('Toque ' + n + ': el navegador no permite compartir estas fotos. Se abrió WhatsApp con el texto.');
+        showToast('Este navegador no puede adjuntar fotos. Se envía solo el texto.', 3500);
+        openWhatsAppText(text);
+        return;
+      }
+
+      setStatus('Toque ' + n + ': abriendo el menú de compartir...');
+      let p;
+      try {
+        p = navigator.share(data);               // dentro del gesto del usuario
+      } catch (err) {
+        shareFailed(err, text, n);
+        return;
+      }
+      Promise.resolve(p)
+        .then(() => setStatus('Toque ' + n + ': compartido correctamente.'))
+        .catch(err => shareFailed(err, text, n));
     });
 
     // ---------- Nuevo reporte ----------
     $('btnNuevo').addEventListener('click', () => {
-      const tieneDatos = FIELDS.some(f => f !== 'estatus' && val(f) !== '') ||
-        photos.length > 0 || (typeof scanPages !== 'undefined' && scanPages.length > 0) ||
-        (typeof scanPdfFile !== 'undefined' && !!scanPdfFile);
-      if (tieneDatos && !confirm('¿Desea iniciar un nuevo reporte? Se borrarán todos los datos, fotografías y el PDF escaneado.')) return;
+      const tieneDatos = FIELDS.some(f => f !== 'estatus' && val(f) !== '') || photos.length > 0;
+      if (tieneDatos && !confirm('¿Desea iniciar un nuevo reporte? Se borrarán todos los datos y fotos ingresadas.')) return;
 
       $('reportForm').reset();
       FIELDS.forEach(f => $(f).classList.remove('invalid'));
       clearPhotos();
-      if (typeof clearScannedDocument === 'function') clearScannedDocument();
       clearDraft();
-      setStatus('');
+      setStatus('');           // limpia mensajes del reporte anterior
+      shareCount = 0;
       $('reportPreviewSection').style.display = 'none';
       window.scrollTo({ top: 0, behavior: 'smooth' });
     });
@@ -1318,7 +858,7 @@ Estatus del equipo: ${estatus}`;
       // (así nunca se pierde un reporte en curso); si los hay, la actualización se aplica al reabrir.
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         if (!hadController || reloading) return;
-        const tieneDatos = FIELDS.some(f => f !== 'estatus' && val(f) !== '') || photos.length > 0 || (typeof scanPages !== 'undefined' && scanPages.length > 0) || (typeof scanPdfFile !== 'undefined' && !!scanPdfFile);
+        const tieneDatos = FIELDS.some(f => f !== 'estatus' && val(f) !== '') || photos.length > 0;
         if (tieneDatos) { showToast('Actualización lista: se aplicará al reabrir la app.', 4000); return; }
         reloading = true;
         location.reload();
