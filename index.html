@@ -293,7 +293,8 @@
       <label style="color: var(--primary); margin-bottom: 10px;">REPORTE GENERADO:</label>
       <div class="report-output" id="reportOutput"></div>
       <div class="actions-grid">
-        <a class="btn btn-whatsapp" id="btnWhatsApp" href="https://wa.me/" target="_blank" rel="noopener">Compartir por WhatsApp</a>
+        <button type="button" class="btn btn-whatsapp" id="btnWhatsApp">Compartir fotografías por WhatsApp</button>
+        <button type="button" class="btn btn-outline" id="btnCompartirPDF">Compartir PDF por WhatsApp</button>
         <a class="btn btn-outline" id="btnWhatsAppTexto" href="https://wa.me/" target="_blank" rel="noopener">Enviar solo texto a WhatsApp</a>
         <button type="button" class="btn btn-copy" id="btnCopiar">Copiar reporte</button>
         <p class="hint" id="shareHint"></p>
@@ -327,6 +328,7 @@
     let toastTimer = null;
     let photoSeq = 0;            // para dar nombre único a cada foto
     let photoQueue = Promise.resolve();   // procesa las fotos de una en una, en orden
+    let photosPending = 0;
 
     const $ = (id) => document.getElementById(id);
     const FIELDS = ['servicio','equipo','marca','modelo','serial','bienNacional','fallas','trabajos','estatus','recomendaciones'];
@@ -415,6 +417,7 @@
     // Punto único de entrada para fotos (cámara y galería). Se encolan para conservar el orden.
     function addPhotoFiles(files) {
       if (!files.length) return;
+      photosPending += files.length;
       showToast('Procesando fotografías...', 1500);
       photoQueue = photoQueue.then(async () => {
         for (const f of files) {
@@ -423,7 +426,9 @@
           photos.push({ file: named, url: URL.createObjectURL(named) });
         }
         renderPhotoGrid();
-      }).catch(() => showToast('No se pudo procesar una fotografía'));
+      }).catch(() => showToast('No se pudo procesar una fotografía')).finally(() => {
+        photosPending = Math.max(0, photosPending - files.length);
+      });
     }
 
     // ---------- Cámara dentro de la app ----------
@@ -1013,9 +1018,7 @@ Estatus del equipo: ${estatus}`;
     });
 
     function updateShareHint() {
-      $('shareHint').textContent = (photos.length || scanPdfFile)
-        ? 'Se abrirá el menú nativo de Android para compartir el reporte y los archivos adjuntos (fotos y/o PDF) en una sola operación. La aplicación de destino determina cómo los recibe.'
-        : 'Sin archivos: se abre WhatsApp directamente con el texto.';
+      $('shareHint').textContent = 'Las fotografías y el PDF se comparten por separado. El menú nativo permite elegir WhatsApp; si no admite adjuntos, los archivos se descargarán para adjuntarlos manualmente. La aplicación no puede confirmar la entrega.';
     }
 
     // ---------- Copiar ----------
@@ -1045,14 +1048,17 @@ Estatus del equipo: ${estatus}`;
       document.body.removeChild(ta);
     }
 
-    // ---------- WhatsApp ----------
+    // ---------- Compartición robusta (fotografías y PDF por separado) ----------
+    let shareCount = 0;
+    let shareUnlockTimer = null;
     function lockShare(ms = 1200) {
       shareLocked = true;
-      setTimeout(() => { shareLocked = false; }, ms);
+      if (shareUnlockTimer) clearTimeout(shareUnlockTimer);
+      shareUnlockTimer = setTimeout(() => { shareLocked = false; shareUnlockTimer = null; }, ms);
     }
 
-    // Abre WhatsApp con el texto en una pestaña nueva (así la página conserva las fotos).
-    // Se hace con un enlace real (como el botón de solo texto), que es lo que funciona en el teléfono.
+    function setStatus(msg) { $('shareStatus').textContent = msg; }
+
     function openWhatsAppText(text) {
       const a = document.createElement('a');
       a.href = waUrl(text);
@@ -1060,98 +1066,136 @@ Estatus del equipo: ${estatus}`;
       a.rel = 'noopener';
       document.body.appendChild(a);
       a.click();
-      document.body.removeChild(a);
+      a.remove();
     }
 
-    // Enlace "solo texto": es un <a> real, el toque del usuario lo abre directamente.
+    function downloadFile(file) {
+      if (!file || !(file instanceof Blob) || file.size <= 0) return false;
+      const url = URL.createObjectURL(file);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = file.name || 'archivo';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Se revoca con demora para permitir que Android inicie la descarga.
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return true;
+    }
+
+    function validPhotoFiles() {
+      const originals = photos.map(p => p && p.file).filter(f =>
+        f instanceof File && f.size > 0 &&
+        /^image\/(jpeg|png|webp|heic|heif)$/i.test(f.type || '')
+      );
+      if (photos.length && collageOn && collageState === 'ready' &&
+          collageFile instanceof File && collageFile.size > 0 &&
+          collageFile.type === 'image/jpeg') return [collageFile];
+      // Mientras el collage se procesa o si falla, usar los originales sin cancelar.
+      return originals;
+    }
+
+    function canShareFiles(files) {
+      if (!files.length || typeof navigator.share !== 'function' ||
+          typeof navigator.canShare !== 'function') return false;
+      try { return navigator.canShare({ files }); }
+      catch (_) { return false; }
+    }
+
+    function shareFallback(files, text, kind) {
+      let count = 0;
+      files.forEach(file => { if (downloadFile(file)) count++; });
+      if (count) {
+        setStatus('Se descargaron ' + count + ' archivo(s). No se enviaron automáticamente. Adjunte los archivos en WhatsApp.');
+        showToast('Los archivos se descargaron. Adjúntelos manualmente en WhatsApp.', 4500);
+      } else {
+        setStatus('No hay archivos válidos para descargar. Se abrirá WhatsApp con el texto.');
+        showToast('No se encontraron archivos válidos.', 3500);
+      }
+      openWhatsAppText(text);
+    }
+
+    function shareFiles(files, text, kind) {
+      if (!files.length) {
+        setStatus(kind === 'PDF' ? 'No hay un PDF generado disponible.' : 'No hay fotografías válidas para compartir.');
+        showToast(kind === 'PDF' ? 'Primero genere el PDF.' : 'Agregue fotografías antes de compartir.', 3000);
+        return;
+      }
+      if (!canShareFiles(files)) {
+        shareFallback(files, text, kind);
+        return;
+      }
+
+      setStatus('Selecciona WhatsApp para compartir ' + (kind === 'PDF' ? 'el PDF' : 'las fotografías') + '.');
+      let result;
+      try {
+        // Debe ejecutarse directamente durante el gesto del usuario.
+        result = navigator.share({ files, text });
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          setStatus('Compartición cancelada. No se confirmó el envío.');
+          return;
+        }
+        console.error('Error al abrir el menú de compartir:', err);
+        shareFallback(files, text, kind);
+        return;
+      }
+      Promise.resolve(result).then(() => {
+        setStatus('El menú de compartir terminó. El navegador no permite confirmar la entrega en WhatsApp.');
+      }).catch(err => {
+        if (err && err.name === 'AbortError') {
+          setStatus('Compartición cancelada por el usuario. No se confirmó el envío.');
+          return;
+        }
+        console.error('Error al compartir archivos:', err);
+        setStatus('No se pudo completar la compartición (' + ((err && err.name) || 'error') + ').');
+        showToast('No se pudo compartir el archivo. Puede intentar descargarlo manualmente.', 4000);
+      });
+    }
+
     $('btnWhatsAppTexto').addEventListener('click', (e) => {
       if (shareLocked) { e.preventDefault(); return; }
       lockShare();
       $('btnWhatsAppTexto').href = waUrl(refreshReport());
     });
 
-    let shareCount = 0;
-
-    function setStatus(msg) { $('shareStatus').textContent = msg; }
-
-    function downloadScanPdfFallback() {
-      if (!scanPdfFile || !scanPdfUrl) return;
-      const a=document.createElement('a');a.href=scanPdfUrl;a.download=scanPdfFile.name;
-      document.body.appendChild(a);a.click();a.remove();
-    }
-
-    function shareFailed(err, text, n) {
-      const name = (err && err.name) || 'error';
-      if (name === 'AbortError') {
-        setStatus('Toque ' + n + ': el menú de compartir se cerró o se canceló.');
-        return;
-      }
-      console.warn('Fallo al compartir:', err);
-      downloadScanPdfFallback();
-      setStatus('Toque ' + n + ': error al compartir (' + name + (err && err.message ? ': ' + err.message : '') + '). Se abrió WhatsApp con el texto.');
-      showToast('No se pudo abrir el menú de compartir (' + name + '). Abriendo WhatsApp con el texto...', 4000);
-      openWhatsAppText(text);
-    }
-
     $('btnWhatsApp').addEventListener('click', (e) => {
-      shareCount++;
-      const n = shareCount;
       if (shareLocked) { e.preventDefault(); return; }
-      lockShare();
-
+      lockShare(1800);
       const text = refreshReport();
-      $('btnWhatsApp').href = waUrl(text);
-
-      // Sin fotos: el propio enlace abre WhatsApp (igual que "solo texto").
-      if (!photos.length && !scanPdfFile) {
-        setStatus('Toque ' + n + ': sin archivos, abriendo WhatsApp con el texto.');
+      if (photosPending > 0 && photos.length === 0) {
+        setStatus('Las fotografías todavía se están procesando. Vuelva a tocar el botón cuando termine el procesamiento.');
+        showToast('Espere a que termine el procesamiento de las fotografías y vuelva a compartir.', 3500);
         return;
       }
-
-      // Con fotos: se cancela el enlace y se usa el menú de compartir.
-      e.preventDefault();
-
+      const files = validPhotoFiles();
       if (collageState === 'building') {
-        setStatus('Toque ' + n + ': el collage aún se está creando, intente de nuevo en un momento.');
-        showToast('Creando el collage... intente de nuevo en un momento', 3000);
+        setStatus('El collage sigue procesándose; se compartirán las fotografías originales.');
+        showToast('Preparando fotografías para compartir...', 2500);
+      } else {
+        setStatus('Preparando fotografías para compartir.');
+      }
+      if (!files.length) {
+        if (photos.length) setStatus('Las fotografías todavía se están procesando o no son válidas.');
+        else setStatus('No hay fotografías adjuntas. Se abrirá WhatsApp con el texto.');
+        if (!photos.length) openWhatsAppText(text);
         return;
       }
+      shareFiles(files, text, 'fotografías');
+    });
 
-      if (typeof navigator.share !== 'function' || typeof navigator.canShare !== 'function') {
-        downloadScanPdfFallback();
-        setStatus('Toque ' + n + ': este navegador no tiene menú de compartir (¿página abierta como archivo local?). Se abrió WhatsApp con el texto.');
-        showToast('Este navegador no puede adjuntar fotos. Se envía solo el texto.', 3500);
-        openWhatsAppText(text);
+    $('btnCompartirPDF').addEventListener('click', () => {
+      if (shareLocked) return;
+      lockShare(1800);
+      const text = refreshReport();
+      if (!scanPdfFile || !(scanPdfFile instanceof File) ||
+          scanPdfFile.size <= 0 || scanPdfFile.type !== 'application/pdf') {
+        setStatus('No existe un PDF válido generado. Genere primero el documento PDF.');
+        showToast('Primero genere el PDF.', 3000);
         return;
       }
-
-      // Web Share recibe los Blob/File ya preparados; se evita clonar innecesariamente todos sus bytes.
-      const sources = (photos.length && collageState === 'ready' && collageFile) ? [collageFile] : photos.map(ph => ph.file);
-      const files = sources.slice();
-      if (scanPdfFile) files.push(scanPdfFile);
-      const data = { text, files };
-
-      let can = false;
-      try { can = navigator.canShare(data); } catch (err) {}
-      if (!can) {
-        downloadScanPdfFallback();
-        setStatus('Toque ' + n + ': el navegador no permite compartir estas fotos. Se abrió WhatsApp con el texto.');
-        showToast('Este navegador no puede adjuntar fotos. Se envía solo el texto.', 3500);
-        openWhatsAppText(text);
-        return;
-      }
-
-      setStatus('Toque ' + n + ': abriendo el menú de compartir...');
-      let p;
-      try {
-        p = navigator.share(data);               // dentro del gesto del usuario
-      } catch (err) {
-        shareFailed(err, text, n);
-        return;
-      }
-      Promise.resolve(p)
-        .then(() => setStatus('Toque ' + n + ': compartido correctamente.'))
-        .catch(err => shareFailed(err, text, n));
+      setStatus('Preparando PDF para compartir.');
+      shareFiles([scanPdfFile], text, 'PDF');
     });
 
     // ---------- Nuevo reporte ----------
