@@ -307,6 +307,7 @@
     <video id="scanVideo" autoplay playsinline muted style="width:100%;flex:1;min-height:0;object-fit:contain;background:#000"></video>
     <canvas id="scanEditCanvas" style="display:none;max-width:100%;max-height:70vh;object-fit:contain;touch-action:none;margin:auto"></canvas>
     <div id="scanEditHelp" style="display:none;text-align:center;padding:5px 12px;font-size:13px;color:#dbeafe">Arrastre los cuatro círculos hasta las esquinas del documento para ajustar el recorte y la perspectiva.</div>
+    <div id="scanProgress" role="status" aria-live="polite" style="min-height:20px;padding:4px 12px;text-align:center;font-size:13px;color:#bae6fd"></div>
     <div style="padding:14px;display:flex;gap:8px;justify-content:center;flex-wrap:wrap">
       <button type="button" id="scanCapture" class="cam-btn">Capturar página</button>
       <button type="button" id="scanAuto" class="cam-btn" style="display:none">Detectar bordes</button>
@@ -744,23 +745,47 @@
         for(let j=0;j<n;j++)if(j!==i){const f=A[j][i];for(let k=i;k<n;k++)A[j][k]-=f*A[i][k];b[j]-=f*b[i];}}
       return b;
     }
-    function warpScan() {
-      const pts=scanCorners, w=Math.min(1800,Math.max(800,Math.round(Math.max(Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y),Math.hypot(pts[2].x-pts[3].x,pts[2].y-pts[3].y)))));
-      const h=Math.round(w*Math.max(Math.hypot(pts[3].x-pts[0].x,pts[3].y-pts[0].y),Math.hypot(pts[2].x-pts[1].x,pts[2].y-pts[1].y))/Math.max(1,Math.max(Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y),Math.hypot(pts[2].x-pts[3].x,pts[2].y-pts[3].y))));
-      const dst=[{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}], A=[],b=[];
+    async function warpScan() {
+      if (!scanRaw || !scanRaw.width || !scanRaw.height || scanCorners.length !== 4) {
+        throw new Error('No hay una captura válida para procesar.');
+      }
+      const pts=scanCorners.map(p=>({x:Number(p.x),y:Number(p.y)}));
+      if (pts.some(p=>!Number.isFinite(p.x)||!Number.isFinite(p.y))) throw new Error('Las esquinas del documento no son válidas.');
+      const top=Math.hypot(pts[1].x-pts[0].x,pts[1].y-pts[0].y);
+      const bottom=Math.hypot(pts[2].x-pts[3].x,pts[2].y-pts[3].y);
+      const left=Math.hypot(pts[3].x-pts[0].x,pts[3].y-pts[0].y);
+      const right=Math.hypot(pts[2].x-pts[1].x,pts[2].y-pts[1].y);
+      const w=Math.min(1600,Math.max(700,Math.round(Math.max(top,bottom))));
+      const h=Math.min(2200,Math.max(700,Math.round(w*Math.max(left,right)/Math.max(1,Math.max(top,bottom)))));
+      if (!Number.isFinite(w)||!Number.isFinite(h)||w<1||h<1) throw new Error('No se pudo calcular el tamaño de la página.');
+      const dst=[{x:0,y:0},{x:w,y:0},{x:w,y:h},{x:0,y:h}],A=[],b=[];
       for(let i=0;i<4;i++){const {x,y}=pts[i],X=dst[i].x,Y=dst[i].y;A.push([X,Y,1,0,0,0,-x*X,-x*Y]);b.push(x);A.push([0,0,0,X,Y,1,-y*X,-y*Y]);b.push(y);}
       const q=solveLinear(A,b),out=document.createElement('canvas');out.width=w;out.height=h;
-      const ctx=out.getContext('2d'),img=ctx.createImageData(w,h),raw=document.createElement('canvas'),rc=raw.getContext('2d');
-      raw.width=scanRaw.width;raw.height=scanRaw.height;rc.drawImage(scanRaw,0,0);
-      const src=rc.getImageData(0,0,raw.width,raw.height),d=img.data;
-      // Muestreo bilineal y mejora moderada de contraste/iluminación, sin sobresaturar texto.
-      for(let Y=0;Y<h;Y++)for(let X=0;X<w;X++){
-        const den=q[6]*X+q[7]*Y+1,sx=(q[0]*X+q[1]*Y+q[2])/den,sy=(q[3]*X+q[4]*Y+q[5])/den,ix=Math.max(0,Math.min(raw.width-1,Math.round(sx))),iy=Math.max(0,Math.min(raw.height-1,Math.round(sy)));
-        const si=(iy*raw.width+ix)*4,di=(Y*w+X)*4;
-        for(let c=0;c<3;c++)d[di+c]=Math.max(0,Math.min(255,(src.data[si+c]-128)*1.12+138));d[di+3]=255;
+      const ctx=out.getContext('2d',{willReadFrequently:false});
+      if(!ctx) throw new Error('El navegador no pudo crear el lienzo de procesamiento.');
+      const img=ctx.createImageData(w,h),src=scanRaw.getContext('2d',{willReadFrequently:true}).getImageData(0,0,scanRaw.width,scanRaw.height),d=img.data;
+      // Procesamiento por bloques: permite que Chrome actualice la pantalla y responda
+      // durante el cálculo, evitando congelar el hilo principal en teléfonos Android.
+      const yieldFrame=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+      const blockRows=24;
+      for(let y0=0;y0<h;y0+=blockRows){
+        const yEnd=Math.min(h,y0+blockRows);
+        for(let Y=y0;Y<yEnd;Y++)for(let X=0;X<w;X++){
+          const den=q[6]*X+q[7]*Y+1;
+          if(!Number.isFinite(den)||Math.abs(den)<1e-10) throw new Error('La perspectiva calculada no es válida.');
+          const sx=(q[0]*X+q[1]*Y+q[2])/den,sy=(q[3]*X+q[4]*Y+q[5])/den;
+          const ix=Math.max(0,Math.min(scanRaw.width-1,Math.round(sx))),iy=Math.max(0,Math.min(scanRaw.height-1,Math.round(sy)));
+          const si=(iy*scanRaw.width+ix)*4,di=(Y*w+X)*4;
+          for(let c=0;c<3;c++)d[di+c]=Math.max(0,Math.min(255,(src.data[si+c]-128)*1.12+138));
+          d[di+3]=255;
+        }
+        if(yEnd<h) await yieldFrame();
       }
-      ctx.putImageData(img,0,0);raw.width=raw.height=0;
-      return new Promise(resolve=>out.toBlob(blob=>resolve({blob,width:w,height:h}),'image/jpeg',.91));
+      ctx.putImageData(img,0,0);
+      const blob=await new Promise((resolve,reject)=>out.toBlob(value=>value?resolve(value):reject(new Error('Chrome no pudo codificar la página escaneada.')),'image/jpeg',.88));
+      out.width=out.height=0;
+      if(!blob.size) throw new Error('La página procesada quedó vacía.');
+      return {blob,width:w,height:h};
     }
     async function captureScanPage() {
       const v=$('scanVideo');if(!v.videoWidth)return;
@@ -804,6 +829,12 @@
       for(const p of parts){out.set(p,at);at+=p.length;}return out;
     }
     async function buildLocalPdf(pages) {
+      if(!Array.isArray(pages)||!pages.length) throw new Error('No hay páginas confirmadas para incluir en el PDF.');
+      for(let i=0;i<pages.length;i++){
+        const p=pages[i];
+        if(!p||!p.blob||typeof p.blob.arrayBuffer!=='function'||!Number.isFinite(p.width)||!Number.isFinite(p.height)||p.width<1||p.height<1)
+          throw new Error('La página '+(i+1)+' no contiene una imagen válida.');
+      }
       const count=pages.length,objects=new Array(2+count*3),chunks=[];
       objects[1]='<< /Type /Catalog /Pages 2 0 R >>';
       const kids=[];
@@ -844,44 +875,55 @@
     async function finishScan() {
       const finishButton=$('scanFinish');
       if(finishButton.dataset.busy==='1')return;
+      if(!scanRaw&&!scanPages.length){showToast('Primero tome una fotografía del documento.');return;}
       finishButton.dataset.busy='1';
       finishButton.disabled=true;
       const originalText=finishButton.textContent;
+      const progress=$('scanProgress');
+      const paint=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
       finishButton.textContent='Generando PDF…';
+      progress.textContent='Preparando las páginas…';
       try {
-        // Si el usuario toma una foto y pulsa directamente Finalizar,
-        // procesar esa captura automáticamente sin exigir otro toque en "Usar página".
+        // Si hay una captura aún sin confirmar, se incorpora automáticamente sin perderla.
         if(scanRaw) {
+          progress.textContent='Corrigiendo perspectiva de la captura…';
+          await paint();
           const result=await warpScan();
-          if(!result || !result.blob) throw new Error('No se pudo procesar la captura actual');
-          scanPages.push({blob:result.blob,width:result.width,height:result.height,at:scanCapturedAt || new Date()});
+          if(!result||!result.blob) throw new Error('No se pudo procesar la captura actual.');
+          scanPages.push({blob:result.blob,width:result.width,height:result.height,at:scanCapturedAt||new Date()});
           resetScanCapture();
           updateScanPageList();
         }
-        if(!scanPages.length) {
-          showToast('Primero tome una fotografía del documento.');
-          return;
-        }
+        if(!scanPages.length) throw new Error('No hay páginas escaneadas para generar el documento.');
         stopScanCamera();
+        progress.textContent='Generando PDF: '+scanPages.length+' página(s)…';
+        $('scanStatus').textContent='Generando PDF localmente…';
+        await paint();
         const pdfBlob=await buildLocalPdf(scanPages);
+        if(!pdfBlob||pdfBlob.type!=='application/pdf'||pdfBlob.size<100) throw new Error('El generador no produjo un PDF válido.');
         const clean=x=>(x||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-zA-Z0-9_-]+/g,'_').replace(/^_+|_+$/g,'').slice(0,55)||'Sin_dato';
-        const date=(scanPages[0]&&scanPages[0].at)||scanCapturedAt||new Date();
+        const date=(scanPages[0]&&scanPages[0].at instanceof Date)?scanPages[0].at:new Date();
         const ds=[String(date.getDate()).padStart(2,'0'),String(date.getMonth()+1).padStart(2,'0'),date.getFullYear()].join('-');
         const name=clean(val('equipo'))+'_'+clean(val('servicio'))+'_'+ds+'.pdf';
-        scanPdfFile=new File([pdfBlob],name,{type:'application/pdf',lastModified:Date.now()});
+        const newFile=new File([pdfBlob],name,{type:'application/pdf',lastModified:Date.now()});
+        const newUrl=URL.createObjectURL(newFile);
         if(scanPdfUrl)URL.revokeObjectURL(scanPdfUrl);
-        scanPdfUrl=URL.createObjectURL(scanPdfFile);
+        scanPdfFile=newFile;scanPdfUrl=newUrl;
         $('scanPdfDownload').href=scanPdfUrl;
         $('scanPdfDownload').download=name;
         $('scanPdfName').textContent=name;
         $('scanPdfReady').style.display='block';
         $('scanStatus').textContent=scanPages.length+' página(s) escaneada(s), PDF listo.';
+        progress.textContent='PDF generado correctamente.';
         $('scannerOverlay').style.display='none';
         updateShareHint();
         showToast('PDF generado correctamente.');
       } catch(e) {
         console.error('Error al finalizar el escaneo:',e);
-        showToast('No se pudo generar el PDF. Puede volver a intentarlo.');
+        const reason=(e&&e.message)?e.message:'Error desconocido del navegador.';
+        progress.textContent='No se pudo generar el PDF: '+reason+' Las páginas se conservaron; puede volver a intentarlo.';
+        $('scanStatus').textContent='Error al generar el PDF. Las páginas escaneadas se conservaron.';
+        showToast('Error al generar PDF: '+reason,5000);
         $('scannerOverlay').style.display='flex';
       } finally {
         finishButton.disabled=false;
