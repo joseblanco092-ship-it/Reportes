@@ -1,8 +1,8 @@
 // Cambiar este número en cada publicación para que los dispositivos descarguen los archivos nuevos.
-const VERSION = 'v8';
+const VERSION = 'v12';
 const CACHE = 'reportes-pwa-' + VERSION;
-const BASE = '/Reportes/';
-const ICON_V = '?v=8';
+const BASE = new URL('./', self.registration.scope).pathname;
+const ICON_V = '?v=12';
 const FILES = [
   BASE,
   BASE + 'index.html',
