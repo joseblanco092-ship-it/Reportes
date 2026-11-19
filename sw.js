@@ -1,5 +1,5 @@
 // Cambiar este número en cada publicación para que los dispositivos descarguen los archivos nuevos.
-const VERSION = 'v11';
+const VERSION = 'v8';
 const CACHE = 'reportes-pwa-' + VERSION;
 const BASE = '/Reportes/';
 const ICON_V = '?v=8';
